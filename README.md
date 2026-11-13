@@ -20,22 +20,53 @@ Most large-sample studies stop at NSE/KGE. This project also asks whether the mo
 
 ## Results
 
-> Fill in from `results/summary.md` after running.
+Test period October 2008 to September 2020, never used in training. Of 296 CAMELS-CH catchments, 204 have at least 80%
+streamflow coverage in both the training and test periods. These are split at random into 163 training catchments and
+41 held-out ("ungauged") catchments.
 
-| Metric (median across basins) | Gauged | Ungauged (held-out) |
+Main model (`medium`: LSTM with 128 hidden units, 365-day input, trained on 1985-2005):
+
+| Metric (median across catchments) | Gauged (163) | Ungauged (41) |
 |---|---|---|
-| NSE | | |
-| KGE | | |
-| Peak timing error (days) | | |
-| Peak magnitude error, MAPE (%) | | |
-| 10-yr return level ratio sim/obs | | |
+| NSE | 0.72 | 0.51 |
+| KGE | 0.78 | 0.56 |
+| High-flow volume bias, FHV (%) | -14.6 | -11.5 |
+| Peak timing error (days) | 0.44 | 0.50 |
+| Peak magnitude error, MAPE (%) | 38 | 42 |
+| Annual maximum, simulated / observed | 0.67 | 0.70 |
+| 10-year return level, simulated / observed (GPD) | 0.85 | 0.88 |
+| 10-year return level: observed and simulated 90% CIs overlap | 75% | 71% |
+
+Effect of model capacity and training length (`fast`: 64 hidden units, 270-day input, 1995-2005, short epochs; results in `results_fast/`):
+
+| Median | fast, gauged | medium, gauged | fast, ungauged | medium, ungauged |
+|---|---|---|---|---|
+| NSE | 0.64 | 0.72 | 0.50 | 0.51 |
+| KGE | 0.68 | 0.78 | 0.52 | 0.56 |
+| Annual maximum, sim / obs | 0.59 | 0.67 | 0.62 | 0.70 |
+| 10-year return level, sim / obs | 0.67 | 0.85 | 0.67 | 0.88 |
 
 | | |
 |---|---|
 | ![](results/fig1_nse_cdf.png) | ![](results/fig2_heldout_map.png) |
 | ![](results/fig3_flood_hydrograph.png) | ![](results/fig4_return_levels.png) |
 
-**Key findings:** _(2-3 sentences: size of the regionalisation gap, whether peaks are biased low, where the tail estimates disagree)_
+### Findings
+
+1. **Transfer to unseen catchments works for most, not all.** On held-out catchments the median NSE is 0.51, against
+   0.72 where the model was trained. About four in five held-out catchments keep useful skill, but roughly one in five
+   falls below NSE 0, which points to catchments whose behaviour the static attributes do not capture (likely candidates:
+   lake regulation, hydropower, karst or glaciers).
+2. **A larger model helps where it has data, not where it doesn't.** Moving from `fast` to `medium` raises gauged NSE from
+   0.64 to 0.72, but ungauged NSE barely moves (0.50 to 0.51). The regionalisation gap grows with capacity, so better
+   transfer needs better catchment descriptors or more diverse training catchments, not just a bigger model.
+3. **Flood timing is right; flood size is biased low.** Peaks arrive within about half a day, but annual maxima reach
+   only about 70% of observed values. This is the known tendency of LSTMs trained with a mean-error loss to smooth
+   extremes.
+4. **The tail improves more than the daily peaks.** The 10-year return level ratio rises from 0.67 to about 0.87 with the
+   larger model, and observed and simulated confidence intervals overlap in about 70% of held-out catchments. The
+   largest floods (observed 10-year levels of 80-100 mm/day) are still clearly underestimated, so the model should not be
+   trusted for the rarest events without a correction step.
 
 ## Design choices
 
@@ -50,7 +81,7 @@ Most large-sample studies stop at NSE/KGE. This project also asks whether the mo
 
 ## Run it
 
-About 45-90 minutes in total on a laptop CPU with the `fast` config, most of it unattended training.
+About an hour on a laptop GPU with the `medium` config, most of it unattended training.
 
 ```bash
 # 1. Environment
@@ -63,15 +94,17 @@ curl -L -o Caravan_extension_CH.zip "https://zenodo.org/records/15025258/files/C
 unzip -q Caravan_extension_CH.zip && cd ..
 
 # 3. Everything: split, train, evaluate, analyse
-./run_all.sh fast cpu          # or: ./run_all.sh fast mps (Apple GPU), ./run_all.sh full cuda:0
+./run_all.sh medium mps        # Apple GPU; use cpu or cuda:0 elsewhere
+# On Apple GPUs, prefix with PYTORCH_ENABLE_MPS_FALLBACK=1 if an MPS error appears
 ```
 
 Outputs go to `results/`: `summary.md`, `basin_metrics.csv` (every metric per basin) and four figures.
 
-| Config | Training years | Model | Epochs | Approx. time |
+| Config | Training years | Model | Epochs | Time on Apple M-series GPU |
 |---|---|---|---|---|
-| `fast` | 1995-2005 | LSTM, 64 hidden units, 270-day input sequence | 12 × 400 updates | ~20-40 min on CPU |
-| `full` | 1985-2005 | LSTM, 256 hidden units, 365-day input sequence | 30, full epochs | GPU recommended |
+| `fast` | 1995-2005 | LSTM, 64 hidden units, 270-day input | 12 × 400 updates | ~5 min |
+| `medium` | 1985-2005 | LSTM, 128 hidden units, 365-day input | 25 × 1500 updates | ~1 h |
+| `full` | 1985-2005 | LSTM, 256 hidden units, 365-day input | 30, full epochs | GPU recommended |
 
 Smoke test without the real data (fake catchments from a simple snow and bucket model):
 
@@ -86,8 +119,11 @@ DATA=data/synthetic ./run_all.sh fast cpu
 - ERA5-Land forcing (~9 km) under-resolves convective precipitation in complex terrain. Gridded station data (e.g. MeteoSwiss) should do better.
 - A 12-year test period limits tail estimates to roughly the 10-year level. Longer return periods would be extrapolation.
 - Some CAMELS-CH catchments are regulated (hydropower, lakes). They are kept in, which may lower skill for those basins.
+- One random split and one training seed. An ensemble of seeds and a k-fold split over catchments would give uncertainty on the headline numbers.
 
 ## Next steps
+
+- **Flood-aware training:** test losses that weight high flows more, or a GPD-based correction of simulated peaks, to reduce the low bias at extremes.
 
 - **Forecast mode:** drive the trained model with weather forecasts (ECMWF IFS, AI models such as AIFS or GraphCast)
   instead of reanalysis, and measure skill against lead time. Caravan MultiMet provides IFS HRES and GraphCast forecasts in Caravan format.
