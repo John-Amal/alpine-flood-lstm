@@ -1,0 +1,6 @@
+neuralhydrology>=1.11
+scipy<1.15  # newer macOS wheels fail to load on some macOS versions
+matplotlib
+pyyaml
+xarray
+netCDF4
